@@ -1836,8 +1836,8 @@ func TestCoreScheduler_DeploymentGC_Force(t *testing.T) {
 	}
 }
 
-// TODO: this is an empty test until CoreScheduler.csiVolumePublicationGC is implemented
-func TestCoreScheduler_CSIVolumePublicationGC(t *testing.T) {
+// TODO: this is an empty test until CoreScheduler.csiVolumeClaimGC is implemented
+func TestCoreScheduler_CSIVolumeClaimGC(t *testing.T) {
 	t.Parallel()
 
 	s1, cleanupS1 := TestServer(t, nil)
@@ -1853,7 +1853,7 @@ func TestCoreScheduler_CSIVolumePublicationGC(t *testing.T) {
 
 	// Update the time tables to make this work
 	tt := s1.fsm.TimeTable()
-	tt.Witness(2000, time.Now().UTC().Add(-1*s1.config.CSIVolumePublicationGCInterval))
+	tt.Witness(2000, time.Now().UTC().Add(-1*s1.config.CSIVolumeClaimGCInterval))
 
 	// Create a core scheduler
 	snap, err := state.Snapshot()
@@ -1861,7 +1861,7 @@ func TestCoreScheduler_CSIVolumePublicationGC(t *testing.T) {
 	core := NewCoreScheduler(s1, snap)
 
 	// Attempt the GC
-	gc := s1.coreJobEval(structs.CoreJobCSIVolumePublicationGC, 2000)
+	gc := s1.coreJobEval(structs.CoreJobCSIVolumeClaimGC, 2000)
 	assert.Nil(core.Process(gc), "Process GC")
 
 	// TODO: assert state is cleaned up

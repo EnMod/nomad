@@ -1105,11 +1105,23 @@ func (n *Node) UpdateAlloc(args *structs.AllocUpdateRequest, reply *structs.Gene
 			continue
 		}
 
-		err = n.unclaimVolumesForTerminalAllocs(args, alloc, taskGroup)
-		if err != nil {
-			n.logger.Error("UpdateAlloc unable to release CSI volume",
-				"alloc", alloc.ID, "error", err)
-			continue
+		// Add an evaluation for garbage collecting the alloc's CSI volume claims
+		if len(taskGroup.Volumes) > 0 {
+			// we have to build this eval by hand rather than calling srv.CoreJob
+			// here because we need to use the alloc's namespace
+			eval := &structs.Evaluation{
+				ID:          uuid.Generate(),
+				Namespace:   alloc.Namespace,
+				Priority:    structs.CoreJobPriority,
+				Type:        structs.JobTypeCore,
+				TriggeredBy: structs.EvalTriggerAllocStop,
+				JobID:       structs.CoreJobCSIVolumeClaimGC + ":" + alloc.JobID,
+				LeaderACL:   n.srv.getLeaderAcl(),
+				Status:      structs.EvalStatusPending,
+				CreateTime:  now.UTC().UnixNano(),
+				ModifyTime:  now.UTC().UnixNano(),
+			}
+			evals = append(evals, eval)
 		}
 
 		// Add an evaluation if this is a failed alloc that is eligible for rescheduling
@@ -1164,32 +1176,6 @@ func (n *Node) UpdateAlloc(args *structs.AllocUpdateRequest, reply *structs.Gene
 
 	// Setup the response
 	reply.Index = future.Index()
-	return nil
-}
-
-// unclaimVolumesForTerminalAllocs unpublishes and unclaims CSI volumes
-// that belong to the alloc if it is terminal.
-func (n *Node) unclaimVolumesForTerminalAllocs(args *structs.AllocUpdateRequest, alloc *structs.Allocation, taskGroup *structs.TaskGroup) error {
-	for _, volume := range taskGroup.Volumes {
-
-		// TODO(tgross): we also need to call ControllerUnpublishVolume CSI RPC here
-		// but the server-side CSI client + routing hasn't been implemented yet
-
-		req := &structs.CSIVolumeClaimRequest{
-			VolumeID:     volume.Source,
-			Allocation:   alloc,
-			Claim:        structs.CSIVolumeClaimRelease,
-			WriteRequest: args.WriteRequest,
-		}
-
-		resp, _, err := n.srv.raftApply(structs.CSIVolumeClaimRequestType, req)
-		if err != nil {
-			return err
-		}
-		if respErr, ok := resp.(error); ok {
-			return respErr
-		}
-	}
 	return nil
 }
 

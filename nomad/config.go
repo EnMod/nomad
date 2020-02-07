@@ -188,9 +188,9 @@ type Config struct {
 	// for GC. This gives users some time to view terminal deployments.
 	DeploymentGCThreshold time.Duration
 
-	// CSIVolumePublicationGCInterval is how often we dispatch a job to GC
+	// CSIVolumeClaimGCInterval is how often we dispatch a job to GC
 	// unclaimed CSI volume publications.
-	CSIVolumePublicationGCInterval time.Duration
+	CSIVolumeClaimGCInterval time.Duration
 
 	// EvalNackTimeout controls how long we allow a sub-scheduler to
 	// work on an evaluation before we consider it failed and Nack it.
@@ -378,7 +378,7 @@ func DefaultConfig() *Config {
 		NodeGCThreshold:                  24 * time.Hour,
 		DeploymentGCInterval:             5 * time.Minute,
 		DeploymentGCThreshold:            1 * time.Hour,
-		CSIVolumePublicationGCInterval:   60 * time.Second,
+		CSIVolumeClaimGCInterval:         60 * time.Second,
 		EvalNackTimeout:                  60 * time.Second,
 		EvalDeliveryLimit:                3,
 		EvalNackInitialReenqueueDelay:    1 * time.Second,

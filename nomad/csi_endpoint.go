@@ -9,6 +9,7 @@ import (
 	memdb "github.com/hashicorp/go-memdb"
 	multierror "github.com/hashicorp/go-multierror"
 	"github.com/hashicorp/nomad/acl"
+	cstructs "github.com/hashicorp/nomad/client/structs"
 	"github.com/hashicorp/nomad/nomad/state"
 	"github.com/hashicorp/nomad/nomad/structs"
 )
@@ -283,6 +284,11 @@ func (v *CSIVolume) Claim(args *structs.CSIVolumeClaimRequest, reply *structs.CS
 		return structs.ErrPermissionDenied
 	}
 
+	err = v.srv.controllerPublishVolume(args)
+	if err != nil {
+		return err
+	}
+
 	resp, index, err := v.srv.raftApply(structs.CSIVolumeClaimRequestType, args)
 	if err != nil {
 		v.logger.Error("csi raft apply failed", "error", err, "method", "claim")
@@ -393,4 +399,118 @@ func (v *CSIPlugin) Get(args *structs.CSIPluginGetRequest, reply *structs.CSIPlu
 			return v.srv.replySetIndex(csiPluginTable, &reply.QueryMeta)
 		}}
 	return v.srv.blockingRPC(&opts)
+}
+
+// ---------------------------------------------
+//
+// TODO:
+// - An API Shim to make programming against the CSI API easier
+// - That will look up an eligible client based on the plugin name, type, and datacenter
+// - Will then perform the required ClientRPC to that node (via server forwarding if necessary).
+//
+
+// TODO: this can block for arbitrarily long times, but we need to
+// make sure it completes before we unclaim the volume. if we do it
+// entirely async from volume cleanup, the alloc might be gc'd out
+// from under us
+func (srv *Server) controllerPublishVolume(args *structs.CSIVolumeClaimRequest) error {
+
+	state := srv.fsm.State()
+	ws := memdb.NewWatchSet()
+
+	vol, err := state.CSIVolumeByID(ws, args.VolumeID)
+	if err != nil {
+		return err
+	}
+	if !vol.ControllerRequired {
+		return nil
+	}
+	plug, err := state.CSIPluginByID(ws, vol.PluginID)
+	if err != nil {
+		return err
+	}
+
+	// TODO(tgross): these client RPCs aren't registered for the client-side code
+	// yet, so the names are speculative
+	method := "ClientCSI.AttachVolume"
+	req := &cstructs.ClientCSIControllerAttachVolumeRequest{
+		PluginName:     plug.ID,
+		VolumeID:       args.VolumeID,
+		NodeID:         args.Allocation.NodeID,
+		AttachmentMode: vol.AttachmentMode,
+		AccessMode:     vol.AccessMode,
+		ReadOnly:       args.Claim == structs.CSIVolumeClaimRead,
+		// TODO(tgross): we don't have a way of setting these yet.
+		// ref https://github.com/hashicorp/nomad/issues/7007
+		// MountOptions:   vol.MountOptions,
+	}
+	// TODO(tgross): should we just always wrap this?
+	reply := &cstructs.ClientCSIControllerAttachVolumeResponse{}
+	err = srv.csiControllerPluginRPC(plug, method, req, reply)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+// TODO: this can block for arbitrarily long times, but we need to
+// make sure it completes before we unclaim the volume. if we do it
+// entirely async from volume cleanup, the alloc might be gc'd out
+// from under us
+func (srv *Server) controllerUnpublishVolume(allocID string, volID string) error {
+	state := srv.fsm.State()
+	ws := memdb.NewWatchSet()
+
+	vol, err := state.CSIVolumeByID(ws, volID)
+	if err != nil {
+		return err
+	}
+	if !vol.ControllerRequired {
+		return nil
+	}
+	plug, err := state.CSIPluginByID(ws, vol.PluginID)
+	if err != nil {
+		return err
+	}
+
+	// TODO(tgross): these client RPCs aren't registered yet, so the names are speculative
+	method := "ClientCSI.AttachVolume"
+	//	method := "ClientCSI.DettachVolume"
+	args := &cstructs.ClientCSIControllerAttachVolumeRequest{}
+	reply := &cstructs.ClientCSIControllerAttachVolumeResponse{}
+
+	//*structs.ClientCSIControllerAttachVolumeRequest,
+	//resp *structs.ClientCSIControllerAttachVolumeResponse
+	err = srv.csiControllerPluginRPC(plug, method, args, reply)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func (srv *Server) csiControllerPluginRPC(plugin *structs.CSIPlugin, method string, args, reply interface{}) error {
+	for _, controller := range plugin.Controllers {
+		err := srv.csiControllerRPC(controller, method, args, reply)
+		if err != nil {
+			// TODO(tgross): should we multi-error here?
+			return err
+		}
+	}
+	return nil
+}
+
+func (srv *Server) csiControllerRPC(controller *structs.CSIInfo, method string, args, reply interface{}) error {
+	nodeInfo := controller.NodeInfo
+	if nodeInfo == nil {
+		// TODO(tgross): ask the user if its running?
+		return fmt.Errorf("no node info for that controller")
+	}
+	err := findNodeConnAndForward(srv, nodeInfo.ID, method, args, reply)
+	if err != nil {
+		return err
+	}
+	if replyErr, ok := reply.(error); ok {
+		return replyErr
+	}
+	return nil
 }
